@@ -1,16 +1,26 @@
-import os, asyncio, streamlit as st
+import os
+import asyncio
+import streamlit as st
 from dotenv import load_dotenv
-import tempfile, re
+import tempfile
+import re
 from datetime import datetime
 from fpdf import FPDF
 
 # Load environment variables first
 load_dotenv()
 
+# Set page config first (must be first Streamlit command)
+st.set_page_config(
+    page_title="🤖 AI Health Assistant", 
+    page_icon="🤖", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 # Check API key before importing other modules
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
-    st.set_page_config(page_title="🤖 AI Health Assistant", page_icon="🤖")
     st.error("❌ **GROQ_API_KEY not found!**")
     st.info("📝 **How to fix this:**")
     st.code("""
@@ -23,44 +33,63 @@ if not GROQ_API_KEY:
 
 # Now import the streaming module
 try:
-    from utils.streaming import stream_agent_response
+    from utils.streaming import stream_agent_response, test_groq_connection
 except ImportError as e:
     st.error(f"❌ Error importing streaming module: {e}")
     st.info("Make sure utils/streaming.py exists and is properly configured")
     st.stop()
 
+# Initialize session state
+if "chat" not in st.session_state:
+    st.session_state.chat = []
+if "name" not in st.session_state:
+    st.session_state.name = ""
+
 # Strip emojis and non-latin1 characters for PDF
 def _strip_nonlatin(text: str) -> str:
+    """Remove non-latin1 characters for PDF compatibility"""
     return re.sub(r"[^\x20-\xFF]", "", text)
 
-# Export PDF
+# Export PDF function
 def export_chat_to_pdf() -> str:
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.set_font("Helvetica", size=12)
-    
-    # Add header
-    pdf.cell(0, 10, f"Health Chat History - {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
-    pdf.ln(10)
+    """Export chat history to PDF file"""
+    try:
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.set_font("Arial", size=12)
+        
+        # Add header
+        pdf.cell(0, 10, f"Health Chat History - {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
+        pdf.ln(10)
 
-    for role, msg in st.session_state.chat:
-        name = "User" if role == "user" else "AI Assistant"
-        clean_line = _strip_nonlatin(f"{name}: {msg}")
-        pdf.multi_cell(0, 10, clean_line)
-        pdf.ln(5)
+        for role, msg in st.session_state.chat:
+            name = "User" if role == "user" else "AI Assistant"
+            clean_line = _strip_nonlatin(f"{name}: {msg}")
+            # Split long lines to avoid PDF issues
+            lines = [clean_line[i:i+80] for i in range(0, len(clean_line), 80)]
+            for line in lines:
+                pdf.multi_cell(0, 10, line)
+            pdf.ln(5)
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
-        pdf.output(tmpfile.name, "F")
-        return tmpfile.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
+            pdf.output(tmpfile.name, "F")
+            return tmpfile.name
+    except Exception as e:
+        st.error(f"Error creating PDF: {e}")
+        return None
 
-# Page setup
-st.set_page_config(
-    page_title="🤖 AI Health Assistant", 
-    page_icon="🤖", 
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Test connection function
+def test_connection():
+    """Test Groq API connection"""
+    try:
+        success, message = test_groq_connection()
+        if success:
+            st.success(f"✅ {message}")
+        else:
+            st.error(f"❌ {message}")
+    except Exception as e:
+        st.error(f"❌ Connection test failed: {e}")
 
 # Advanced CSS styling for modern UI
 st.markdown("""
@@ -298,10 +327,11 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
     
-    name_val = st.text_input("🏷️ Enter your name:", value=st.session_state.get("name", ""), placeholder="What should I call you?")
-    st.session_state["name"] = name_val
+    name_val = st.text_input("🏷️ Enter your name:", value=st.session_state.name, placeholder="What should I call you?")
+    if name_val != st.session_state.name:
+        st.session_state.name = name_val
     
-    if st.session_state.get("chat"):
+    if st.session_state.chat:
         st.markdown(f"""
         <div style="display: flex; justify-content: space-around; margin: 1rem 0; padding: 1rem; background: rgba(102, 126, 234, 0.1); border-radius: 15px;">
             <div style="text-align: center;">
@@ -317,22 +347,24 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("### 🎯 Quick Actions")
+    
     if st.button("🔄 Clear Chat"):
         st.session_state.chat = []
         st.rerun()
     
     if st.button("💡 Get Health Tips"):
-        if "chat" not in st.session_state:
-            st.session_state.chat = []
         st.session_state.chat.append(("user", "Give me some quick health tips"))
         st.rerun()
+    
+    if st.button("🔍 Test Connection"):
+        test_connection()
 
 # Main content area
 col1, col2, col3 = st.columns([1, 6, 1])
 
 with col2:
     # Name required check
-    if not st.session_state.name:
+    if not st.session_state.name.strip():
         st.markdown("""
         <div class="info-box">
             <h3>👋 Welcome to your AI Health Assistant!</h3>
@@ -340,10 +372,6 @@ with col2:
         </div>
         """, unsafe_allow_html=True)
         st.stop()
-
-    # Chat state setup
-    if "chat" not in st.session_state:
-        st.session_state.chat = []
 
     # Welcome message for new users
     if not st.session_state.chat:
@@ -380,7 +408,6 @@ with col2:
     st.markdown('</div>', unsafe_allow_html=True)
 
     # Input area
-    # Create input and send button in columns
     input_col1, input_col2 = st.columns([8, 2])
     
     with input_col1:
@@ -394,24 +421,39 @@ with col2:
     with input_col2:
         send_button = st.button("🚀 Send", use_container_width=True)
 
-    # On Send
-    if send_button and user_msg:
-        st.session_state.chat.append(("user", user_msg))
+    # Handle message sending
+    if (send_button and user_msg.strip()) or (user_msg.strip() and st.session_state.get("enter_pressed", False)):
+        st.session_state.chat.append(("user", user_msg.strip()))
         
         # Show thinking indicator
         with st.spinner("🤔 AI is thinking..."):
-            reply_ph = st.empty()
-            
             try:
-                async def get_reply():
-                    return await stream_agent_response(user_msg, placeholder=reply_ph)
+                # Create a placeholder for the response
+                response_placeholder = st.empty()
                 
-                assistant_text = asyncio.run(get_reply())
-                st.session_state.chat.append(("assistant", assistant_text))
+                # Use asyncio to get the response
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                try:
+                    assistant_text = loop.run_until_complete(
+                        stream_agent_response(user_msg.strip(), placeholder=response_placeholder)
+                    )
+                    
+                    if assistant_text and not assistant_text.startswith("❌"):
+                        st.session_state.chat.append(("assistant", assistant_text))
+                    else:
+                        st.session_state.chat.append(("assistant", "Sorry, I encountered an error. Please try again."))
+                        
+                finally:
+                    loop.close()
+                    
             except Exception as e:
                 st.error(f"Error: {e}")
                 st.session_state.chat.append(("assistant", "Sorry, I encountered an error. Please try again."))
         
+        # Clear the input and rerun
+        st.session_state.user_input = ""
         st.rerun()
 
     # PDF Download Option
@@ -422,14 +464,20 @@ with col2:
         with col_download2:
             try:
                 pdf_path = export_chat_to_pdf()
-                with open(pdf_path, "rb") as file:
-                    st.download_button(
-                        "📄 Download Chat History",
-                        data=file,
-                        file_name=f"health_chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
+                if pdf_path:
+                    with open(pdf_path, "rb") as file:
+                        st.download_button(
+                            "📄 Download Chat History",
+                            data=file,
+                            file_name=f"health_chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True
+                        )
+                    # Clean up temporary file
+                    try:
+                        os.unlink(pdf_path)
+                    except:
+                        pass
             except Exception as e:
                 st.error(f"Error creating PDF: {e}")
 
